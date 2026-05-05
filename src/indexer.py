@@ -12,26 +12,35 @@ from src.config import Config
 from src.db import Database
 
 # ---------------------------------------------------------------------------
-# JavaScript executed inside the page context to call the Search REST API.
-# Using fetch from the page avoids CORS issues because the request originates
-# from the same origin as the SharePoint tenant.
+# JavaScript executed inside the page context to call the Lists REST API.
+# Handles pagination via the __next link SharePoint includes when there
+# are more items than $top allows.
 # ---------------------------------------------------------------------------
 _FETCH_JS = """
-async (apiUrl) => {
+async (startUrl) => {
     try {
-        const r = await fetch(apiUrl, {
-            headers: { 'Accept': 'application/json;odata=verbose' }
-        });
-        if (!r.ok) return { __error: r.status };
-        return await r.json();
+        let results = [];
+        let nextUrl = startUrl;
+        while (nextUrl) {
+            const r = await fetch(nextUrl, {
+                headers: { 'Accept': 'application/json;odata=verbose' }
+            });
+            if (!r.ok) return { __error: r.status };
+            const data = await r.json();
+            if (data.d && data.d.results) {
+                results = results.concat(data.d.results);
+            }
+            nextUrl = (data.d && data.d.__next) ? data.d.__next : null;
+        }
+        return { results: results };
     } catch(e) {
         return { __error: e.message };
     }
 }
 """
 
-# Maximum number of results returned per Search API call.
-_ROW_LIMIT = 500
+# Items per page — SharePoint hard-caps at 5000; well above our expected count.
+_ROW_LIMIT = 5000
 
 
 # ---------------------------------------------------------------------------
@@ -78,63 +87,48 @@ def _site_base(folder_url: str) -> str:
     )
 
 
+_SUPPORTED_TYPES = {"docx", "xlsx", "pptx", "pdf"}
+
+
 def _build_api_url(site_base: str, folder_url: str, row_limit: int = _ROW_LIMIT) -> str:
-    """Build the SharePoint Search REST API URL."""
-    query_text = (
-        f'Path:"{folder_url}*" AND '
-        "(FileType:docx OR FileType:xlsx OR FileType:pptx OR FileType:pdf)"
+    """Build the SharePoint Lists REST API URL for the library at folder_url."""
+    server_rel_path = urllib.parse.urlparse(folder_url).path
+    type_clauses = " or ".join(
+        f"File_x0020_Type eq '{t}'" for t in sorted(_SUPPORTED_TYPES)
     )
+    odata_filter = f"FSObjType eq 0 and ({type_clauses})"
     params = urllib.parse.urlencode(
         {
-            "querytext": f"'{query_text}'",
-            "selectproperties": "'Title,Path,FileType,Filename,ParentLink'",
-            "rowlimit": str(row_limit),
-            "trimduplicates": "false",
+            "$select": "FileLeafRef,FileRef,File_x0020_Type",
+            "$filter": odata_filter,
+            "$top": str(row_limit),
         }
     )
-    return f"{site_base}/_api/search/query?{params}"
+    return f"{site_base}/_api/web/GetList('{server_rel_path}')/items?{params}"
 
 
-def _parse_rows(data: dict, root_url: str) -> list[dict]:
-    """Parse the odata=verbose search response into a list of file dicts."""
-    try:
-        rows = (
-            data["d"]["query"]["PrimaryQueryResult"]["RelevantResults"]["Table"][
-                "Rows"
-            ]["results"]
-        )
-    except (KeyError, TypeError):
-        return []
+def _parse_items(data: dict, folder_url: str) -> list[dict]:
+    """Parse the Lists REST API response into file dicts."""
+    parsed = urllib.parse.urlparse(folder_url)
+    base_url = f"{parsed.scheme}://{parsed.netloc}"
+    lib_path = parsed.path.rstrip("/")
 
     files: list[dict] = []
-    # Normalise the root URL for relative-path stripping (no trailing slash).
-    root_normalised = root_url.rstrip("/")
+    for item in data.get("results", []):
+        file_ref = item.get("FileRef", "")
+        name = item.get("FileLeafRef", "")
+        file_type = (item.get("File_x0020_Type") or "").lower()
 
-    for row in rows:
-        cells = {c["Key"]: c["Value"] for c in row["Cells"]["results"]}
-        name = cells.get("Filename") or cells.get("Title") or ""
-        url = cells.get("Path", "")
-        file_type = (cells.get("FileType") or "").lower()
-        parent = cells.get("ParentLink", "")
-
-        # Build a short human-readable relative path for display in the UI.
-        if parent.startswith(root_normalised):
-            rel = parent[len(root_normalised):].strip("/")
-        else:
-            # Fall back to the full parent link when the root prefix is absent.
-            rel = parent
-
-        if not name or not url:
+        if not name or not file_ref:
             continue
 
-        files.append(
-            {
-                "name": name,
-                "path": rel,
-                "url": url,
-                "file_type": file_type,
-            }
-        )
+        url = base_url + file_ref
+
+        # Relative folder path: strip library root and filename
+        rel = file_ref[len(lib_path):].strip("/")
+        rel = rel.rsplit("/", 1)[0] if "/" in rel else ""
+
+        files.append({"name": name, "path": rel, "url": url, "file_type": file_type})
     return files
 
 
@@ -218,20 +212,20 @@ class Indexer:
                     # --------------------------------------------------------
                     site_base = _site_base(folder_url)
                     api_url = _build_api_url(site_base, folder_url, row_limit)
-                    _notify(f"Querying {site_base}/_api/search/query…")
+                    _notify("Querying SharePoint library…")
 
                     data = page.evaluate(_FETCH_JS, api_url)
 
                     if not isinstance(data, dict):
                         result_error = f"Unexpected API response: {type(data).__name__}"
                     elif "__error" in data:
-                        result_error = f"Search API error {data['__error']} — check the root URL in Settings"
+                        result_error = f"Lists API error {data['__error']} — check the root URL in Settings"
                     else:
                         # --------------------------------------------------------
                         # Step 5 – parse + write
                         # --------------------------------------------------------
-                        _notify("Parsing search results…")
-                        files = _parse_rows(data, folder_url)
+                        _notify("Parsing results…")
+                        files = _parse_items(data, folder_url)
                         _notify(f"Writing {len(files)} file(s) to database…")
                         self._db.clear_files()
                         if files:
