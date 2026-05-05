@@ -39,26 +39,49 @@ _ROW_LIMIT = 500
 # ---------------------------------------------------------------------------
 
 
-def _site_base(sharepoint_root_url: str) -> str:
-    """Extract the site-base URL (scheme + host + first two path segments).
+def _clean_root_url(url: str) -> str:
+    """Strip SharePoint view suffixes so we get the plain folder URL.
 
-    Example:
-        https://contoso.sharepoint.com/sites/MyTeam/Shared%20Documents
+    SharePoint library URLs often look like:
+        .../Deliverables/Forms/AllItems.aspx?RootFolder=...
+    The actual folder path is everything before /Forms/.
+
+    Examples:
+        .../Deliverables/Forms/AllItems.aspx → .../Deliverables
+        .../Deliverables/                    → .../Deliverables  (unchanged)
+    """
+    parsed = urllib.parse.urlparse(url)
+    path = parsed.path
+    forms_idx = path.lower().find("/forms/")
+    if forms_idx != -1:
+        path = path[:forms_idx]
+    return urllib.parse.urlunparse(
+        (parsed.scheme, parsed.netloc, path.rstrip("/"), "", "", "")
+    )
+
+
+def _site_base(folder_url: str) -> str:
+    """Extract the SharePoint site base URL — one level up from the library folder.
+
+    Works for any URL depth, including custom domains:
+        https://goto.netcompany.com/cases/GTO547/ATPBOS/Deliverables
+        → https://goto.netcompany.com/cases/GTO547/ATPBOS
+
+        https://contoso.sharepoint.com/sites/MyTeam/Documents
         → https://contoso.sharepoint.com/sites/MyTeam
     """
-    parsed = urllib.parse.urlparse(sharepoint_root_url)
+    parsed = urllib.parse.urlparse(folder_url)
     segments = [s for s in parsed.path.split("/") if s]
-    # Keep up to 2 segments: ["sites", "<site-name>"]
-    base_path = "/" + "/".join(segments[:2]) if len(segments) >= 2 else parsed.path
+    base_path = "/" + "/".join(segments[:-1]) if len(segments) > 1 else "/"
     return urllib.parse.urlunparse(
         (parsed.scheme, parsed.netloc, base_path, "", "", "")
     )
 
 
-def _build_api_url(site_base: str, root_url: str, row_limit: int = _ROW_LIMIT) -> str:
+def _build_api_url(site_base: str, folder_url: str, row_limit: int = _ROW_LIMIT) -> str:
     """Build the SharePoint Search REST API URL."""
     query_text = (
-        f'Path:"{root_url}*" AND '
+        f'Path:"{folder_url}*" AND '
         "(FileType:docx OR FileType:xlsx OR FileType:pptx OR FileType:pdf)"
     )
     params = urllib.parse.urlencode(
@@ -162,7 +185,11 @@ class Indexer:
                 on_progress(msg)
 
         start = time.monotonic()
-        root_url = self._config.sharepoint_root_url
+        # Strip SharePoint view suffixes (/Forms/AllItems.aspx etc.)
+        folder_url = _clean_root_url(self._config.sharepoint_root_url)
+
+        files: list[dict] = []
+        result_error: str | None = None
 
         with sync_playwright() as p:
             browser = p.chromium.launch(channel="msedge", headless=True)
@@ -178,63 +205,47 @@ class Indexer:
                 # Step 2 – navigate to root to hydrate auth cookies
                 # --------------------------------------------------------
                 _notify("Navigating to SharePoint…")
-                page.goto(root_url, wait_until="domcontentloaded", timeout=30_000)
+                page.goto(folder_url, wait_until="domcontentloaded", timeout=30_000)
 
                 # --------------------------------------------------------
                 # Step 3 – login check
                 # --------------------------------------------------------
                 if _is_login_page(page.url):
-                    duration = time.monotonic() - start
-                    return IndexResult(
-                        count=0,
-                        duration_seconds=duration,
-                        error="Session expired — please log in again.",
-                    )
+                    result_error = "Session expired — please log in again."
+                else:
+                    # --------------------------------------------------------
+                    # Step 4 – call Search REST API
+                    # --------------------------------------------------------
+                    site_base = _site_base(folder_url)
+                    api_url = _build_api_url(site_base, folder_url, row_limit)
+                    _notify(f"Querying {site_base}/_api/search/query…")
 
-                # --------------------------------------------------------
-                # Step 4 – call Search REST API
-                # --------------------------------------------------------
-                site_base = _site_base(root_url)
-                api_url = _build_api_url(site_base, root_url, row_limit)
-                _notify("Querying SharePoint Search API…")
+                    data = page.evaluate(_FETCH_JS, api_url)
 
-                data = page.evaluate(_FETCH_JS, api_url)
+                    if not isinstance(data, dict):
+                        result_error = f"Unexpected API response: {type(data).__name__}"
+                    elif "__error" in data:
+                        result_error = f"Search API error {data['__error']} — check the root URL in Settings"
+                    else:
+                        # --------------------------------------------------------
+                        # Step 5 – parse + write
+                        # --------------------------------------------------------
+                        _notify("Parsing search results…")
+                        files = _parse_rows(data, folder_url)
+                        _notify(f"Writing {len(files)} file(s) to database…")
+                        self._db.clear_files()
+                        if files:
+                            self._db.upsert_files(files)
 
-                if not isinstance(data, dict):
-                    duration = time.monotonic() - start
-                    return IndexResult(
-                        count=0,
-                        duration_seconds=duration,
-                        error=f"Unexpected API response type: {type(data).__name__}",
-                    )
-
-                if "__error" in data:
-                    duration = time.monotonic() - start
-                    return IndexResult(
-                        count=0,
-                        duration_seconds=duration,
-                        error=f"Search API error: {data['__error']}",
-                    )
-
-                # --------------------------------------------------------
-                # Step 5 – parse results
-                # --------------------------------------------------------
-                _notify("Parsing search results…")
-                files = _parse_rows(data, root_url)
-
-                # --------------------------------------------------------
-                # Step 6 – refresh database
-                # --------------------------------------------------------
-                _notify(f"Writing {len(files)} file(s) to database…")
-                self._db.clear_files()
-                if files:
-                    self._db.upsert_files(files)
-
+            except Exception as exc:
+                result_error = f"{type(exc).__name__}: {exc}"
             finally:
                 browser.close()
 
         duration = time.monotonic() - start
-        _notify(f"Indexing complete — {len(files)} file(s) in {duration:.1f}s.")
+        if result_error:
+            return IndexResult(count=0, duration_seconds=duration, error=result_error)
+        _notify(f"Done — {len(files)} file(s) in {duration:.1f}s.")
         return IndexResult(count=len(files), duration_seconds=duration)
 
     def is_session_valid(self) -> bool:
@@ -243,7 +254,7 @@ class Indexer:
         if not self._auth.has_session():
             return False
 
-        root_url = self._config.sharepoint_root_url
+        folder_url = _clean_root_url(self._config.sharepoint_root_url)
         with sync_playwright() as p:
             browser = p.chromium.launch(channel="msedge", headless=True)
             try:
@@ -251,7 +262,7 @@ class Indexer:
                     storage_state=str(self._auth._session_path)
                 )
                 page = context.new_page()
-                page.goto(root_url, wait_until="domcontentloaded", timeout=30_000)
+                page.goto(folder_url, wait_until="domcontentloaded", timeout=30_000)
                 return not _is_login_page(page.url)
             except Exception:
                 return False
