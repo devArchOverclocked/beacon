@@ -28,21 +28,20 @@ class Searcher:
         if not query.strip():
             return self._files[:limit]
 
-        from rapidfuzz import fuzz, process
+        from rapidfuzz import fuzz, process, utils
 
-        choices = [f"{f['name']} {f['path']}" for f in self._files]
+        # Score against name (primary) and full "name + path" (secondary).
+        # Taking the max means a strong name match isn't diluted by the path.
+        query_proc = utils.default_process(query)
+        scored: list[tuple[float, int]] = []
+        for i, f in enumerate(self._files):
+            name_score = fuzz.WRatio(query_proc, utils.default_process(f["name"]))
+            full_score = fuzz.WRatio(
+                query_proc, utils.default_process(f"{f['name']} {f['path']}")
+            )
+            best = max(name_score, full_score)
+            if best >= 20:
+                scored.append((best, i))
 
-        matches = process.extract(
-            query,
-            choices,
-            scorer=fuzz.WRatio,
-            limit=limit,
-            score_cutoff=35,
-        )
-
-        # matches is a list of (matched_string, score, index)
-        results = []
-        for _matched, _score, idx in matches:
-            results.append(self._files[idx])
-
-        return results
+        scored.sort(key=lambda x: -x[0])
+        return [self._files[i] for _, i in scored[:limit]]

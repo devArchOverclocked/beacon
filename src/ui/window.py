@@ -320,7 +320,8 @@ class BeaconWindow(QWidget):
     # ------------------------------------------------------------------
 
     def eventFilter(self, obj, event) -> bool:  # type: ignore[override]
-        if obj is self._input and isinstance(event, QKeyEvent):
+        from PyQt6.QtCore import QEvent
+        if obj is self._input and isinstance(event, QKeyEvent) and event.type() == QEvent.Type.KeyPress:
             key = event.key()
             mods = event.modifiers()
 
