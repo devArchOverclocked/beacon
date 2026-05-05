@@ -204,6 +204,7 @@ class BeaconWindow(QWidget):
 
     def show_and_focus(self) -> None:
         """Show, raise to front, center on primary screen, clear input."""
+        self._searcher.reload()
         self._input.clear()
         self._clear_results()
         self._update_status()
