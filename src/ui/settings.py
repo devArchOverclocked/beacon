@@ -154,10 +154,15 @@ class SettingsDialog(QDialog):
         fetch_row = QHBoxLayout()
         fetch_row.setSpacing(8)
         self._fetch_btn = QPushButton("Fetch Index Now")
+        self._test_fetch_btn = QPushButton("Test (2 files)")
+        self._test_fetch_btn.setToolTip(
+            "Fetch only 2 files — use this to verify auth and search work before a full index."
+        )
         self._fetch_status = QLabel("")
         self._fetch_status.setStyleSheet(f"color: {SUBTEXT}; font-size: 12px;")
         self._fetch_status.setWordWrap(True)
         fetch_row.addWidget(self._fetch_btn)
+        fetch_row.addWidget(self._test_fetch_btn)
         fetch_row.addWidget(self._fetch_status, 1)
         idx_layout.addLayout(fetch_row)
 
@@ -229,6 +234,7 @@ class SettingsDialog(QDialog):
         self._signals.login_done.connect(self._on_login_done)
         self._signals.index_progress.connect(self._on_index_progress)
         self._signals.index_done.connect(self._on_index_done)
+        self._test_fetch_btn.clicked.connect(self._on_test_fetch_clicked)
 
     # ------------------------------------------------------------------
     # Login flow
@@ -272,19 +278,27 @@ class SettingsDialog(QDialog):
 
     def _on_fetch_clicked(self) -> None:
         self._fetch_btn.setEnabled(False)
+        self._test_fetch_btn.setEnabled(False)
         self._fetch_status.setText("Starting…")
-
         thread = threading.Thread(target=self._run_index, daemon=True)
         thread.start()
 
-    def _run_index(self) -> None:
+    def _on_test_fetch_clicked(self) -> None:
+        self._fetch_btn.setEnabled(False)
+        self._test_fetch_btn.setEnabled(False)
+        self._fetch_status.setText("Test fetch (2 files)…")
+        thread = threading.Thread(
+            target=self._run_index, kwargs={"row_limit": 2}, daemon=True
+        )
+        thread.start()
+
+    def _run_index(self, row_limit: int = 500) -> None:
         def on_progress(msg: str) -> None:
             self._signals.index_progress.emit(msg)
 
         try:
-            result = self._indexer.run(on_progress=on_progress)
-        except Exception as exc:
-            result = None
+            result = self._indexer.run(on_progress=on_progress, row_limit=row_limit)
+        except Exception:
             self._signals.index_done.emit(None)
             return
 
@@ -295,6 +309,7 @@ class SettingsDialog(QDialog):
 
     def _on_index_done(self, result) -> None:
         self._fetch_btn.setEnabled(True)
+        self._test_fetch_btn.setEnabled(True)
         if result is None or result.error:
             err = result.error if result else "Unknown error"
             self._fetch_status.setText(f"✗ {err}")

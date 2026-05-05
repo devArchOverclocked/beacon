@@ -55,7 +55,7 @@ def _site_base(sharepoint_root_url: str) -> str:
     )
 
 
-def _build_api_url(site_base: str, root_url: str) -> str:
+def _build_api_url(site_base: str, root_url: str, row_limit: int = _ROW_LIMIT) -> str:
     """Build the SharePoint Search REST API URL."""
     query_text = (
         f'Path:"{root_url}*" AND '
@@ -65,7 +65,7 @@ def _build_api_url(site_base: str, root_url: str) -> str:
         {
             "querytext": f"'{query_text}'",
             "selectproperties": "'Title,Path,FileType,Filename,ParentLink'",
-            "rowlimit": str(_ROW_LIMIT),
+            "rowlimit": str(row_limit),
             "trimduplicates": "false",
         }
     )
@@ -141,7 +141,9 @@ class Indexer:
     # ------------------------------------------------------------------
 
     def run(
-        self, on_progress: Callable[[str], None] | None = None
+        self,
+        on_progress: Callable[[str], None] | None = None,
+        row_limit: int = _ROW_LIMIT,
     ) -> IndexResult:
         """Index all matching files and refresh the database.
 
@@ -193,7 +195,7 @@ class Indexer:
                 # Step 4 – call Search REST API
                 # --------------------------------------------------------
                 site_base = _site_base(root_url)
-                api_url = _build_api_url(site_base, root_url)
+                api_url = _build_api_url(site_base, root_url, row_limit)
                 _notify("Querying SharePoint Search API…")
 
                 data = page.evaluate(_FETCH_JS, api_url)
