@@ -108,22 +108,15 @@ class BeaconApp:
     # ------------------------------------------------------------------
 
     def _start_hotkey_listener(self) -> None:
-        """Start pynput GlobalHotKeys in a daemon thread."""
+        """Start a pynput Listener that fires only when the full combo is satisfied."""
         try:
-            from pynput import keyboard as _kb
-
-            hotkey_str = self._config.hotkey  # e.g. "ctrl+space"
-            # pynput expects e.g. "<ctrl>+<space>" or "<ctrl>+a"
-            pynput_combo = _to_pynput_hotkey(hotkey_str)
+            hotkey_str = self._config.hotkey
 
             def on_hotkey() -> None:
-                # Must dispatch to main thread
                 from PyQt6.QtCore import QTimer
                 QTimer.singleShot(0, self._window.show_and_focus)
 
-            hotkeys = {pynput_combo: on_hotkey}
-            self._hotkey_listener = _kb.GlobalHotKeys(hotkeys)
-            self._hotkey_listener.daemon = True
+            self._hotkey_listener = _build_hotkey_listener(hotkey_str, on_hotkey)
 
             self._hotkey_thread = threading.Thread(
                 target=self._hotkey_listener.run,
@@ -132,7 +125,6 @@ class BeaconApp:
             )
             self._hotkey_thread.start()
         except Exception as exc:
-            # Non-fatal: hotkey simply won't work (e.g. no display on CI)
             print(f"[Beacon] Could not register hotkey: {exc}", file=sys.stderr)
 
     def _stop_hotkey_listener(self) -> None:
@@ -192,33 +184,65 @@ class BeaconApp:
 
 
 # ---------------------------------------------------------------------------
-# pynput hotkey string conversion
+# Custom hotkey listener (avoids phantom-key false triggers)
 # ---------------------------------------------------------------------------
 
-def _to_pynput_hotkey(hotkey: str) -> str:
-    """Convert e.g. 'ctrl+space' → '<ctrl>+<space>', 'ctrl+a' → '<ctrl>+a'."""
-    _SPECIAL = {
-        "ctrl": "<ctrl>",
-        "alt": "<alt>",
-        "shift": "<shift>",
-        "cmd": "<cmd>",
-        "win": "<cmd>",
-        "space": "<space>",
-        "enter": "<enter>",
-        "tab": "<tab>",
-        "esc": "<esc>",
-        "escape": "<esc>",
-        "up": "<up>",
-        "down": "<down>",
-        "left": "<left>",
-        "right": "<right>",
-        "f1": "<f1>", "f2": "<f2>", "f3": "<f3>", "f4": "<f4>",
-        "f5": "<f5>", "f6": "<f6>", "f7": "<f7>", "f8": "<f8>",
-        "f9": "<f9>", "f10": "<f10>", "f11": "<f11>", "f12": "<f12>",
+def _build_hotkey_listener(hotkey_str: str, callback):
+    """Return a pynput Listener that fires *callback* only when the complete
+    hotkey combo is pressed.
+
+    Modifier keys are tracked explicitly; the callback fires only on the
+    keydown of the non-modifier trigger key while the exact modifiers are
+    held.  This prevents phantom-key false triggers (e.g. Ctrl alone
+    firing Ctrl+Space when a previous Space key-up was missed).
+    """
+    from pynput import keyboard as _kb
+
+    _MOD_VARIANTS: dict[str, tuple] = {
+        "ctrl":  (_kb.Key.ctrl,  _kb.Key.ctrl_l,  _kb.Key.ctrl_r),
+        "alt":   (_kb.Key.alt,   _kb.Key.alt_l,   _kb.Key.alt_r),
+        "shift": (_kb.Key.shift, _kb.Key.shift_l, _kb.Key.shift_r),
+        "cmd":   (_kb.Key.cmd,   _kb.Key.cmd_l,   _kb.Key.cmd_r),
     }
-    parts = hotkey.lower().split("+")
-    converted = []
-    for part in parts:
+    _SPECIAL_TRIGGER: dict[str, _kb.Key] = {
+        "space": _kb.Key.space,
+        "enter": _kb.Key.enter,
+        "tab":   _kb.Key.tab,
+        "esc":   _kb.Key.esc,
+        **{f"f{i}": getattr(_kb.Key, f"f{i}") for i in range(1, 13)},
+    }
+
+    required_mods: set[str] = set()
+    trigger_key = None
+    for part in hotkey_str.lower().split("+"):
         part = part.strip()
-        converted.append(_SPECIAL.get(part, part))
-    return "+".join(converted)
+        if part in _MOD_VARIANTS:
+            required_mods.add(part)
+        elif part in _SPECIAL_TRIGGER:
+            trigger_key = _SPECIAL_TRIGGER[part]
+        else:
+            trigger_key = _kb.KeyCode.from_char(part)
+
+    pressed_mods: set[str] = set()
+
+    def _mod_name(key) -> str | None:
+        for name, variants in _MOD_VARIANTS.items():
+            if key in variants:
+                return name
+        return None
+
+    def on_press(key) -> None:
+        mod = _mod_name(key)
+        if mod is not None:
+            pressed_mods.add(mod)
+        elif key == trigger_key and pressed_mods == required_mods:
+            callback()
+
+    def on_release(key) -> None:
+        mod = _mod_name(key)
+        if mod is not None:
+            pressed_mods.discard(mod)
+
+    listener = _kb.Listener(on_press=on_press, on_release=on_release)
+    listener.daemon = True
+    return listener

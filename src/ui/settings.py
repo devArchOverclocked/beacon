@@ -274,6 +274,12 @@ class SettingsDialog(QDialog):
     # ------------------------------------------------------------------
 
     def _on_fetch_clicked(self) -> None:
+        url = self._url_edit.text().strip()
+        if not url:
+            self._fetch_status.setText("Enter a SharePoint URL first.")
+            self._fetch_status.setStyleSheet("color: #f38ba8; font-size: 12px;")
+            return
+        self._config.sharepoint_root_url = url
         self._fetch_btn.setEnabled(False)
         self._clear_btn.setEnabled(False)
         self._fetch_status.setText("Starting…")
