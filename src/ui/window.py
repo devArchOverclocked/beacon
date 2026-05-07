@@ -204,6 +204,7 @@ class BeaconWindow(QWidget):
 
     def show_and_focus(self) -> None:
         """Show, raise to front, center on primary screen, clear input."""
+        from PyQt6.QtCore import QTimer
         self._searcher.reload()
         self._input.clear()
         self._clear_results()
@@ -212,7 +213,9 @@ class BeaconWindow(QWidget):
         self.show()
         self.raise_()
         self.activateWindow()
-        self._input.setFocus()
+        # Defer setFocus to the next event loop iteration so the window is
+        # fully mapped before we request focus — fixes intermittent miss.
+        QTimer.singleShot(0, self._input.setFocus)
 
     def hide_window(self) -> None:
         self.hide()

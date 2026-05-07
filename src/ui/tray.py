@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import threading
 from datetime import datetime, timezone
-from typing import Callable
+from typing import Callable, Optional
 
 from PyQt6.QtCore import QObject, pyqtSignal
 from PyQt6.QtGui import QColor, QFont, QIcon, QPainter, QPixmap
@@ -64,12 +64,14 @@ class BeaconTray(QSystemTrayIcon):
         db: Database,
         indexer,          # Indexer — avoid circular import with string type
         show_window_cb: Callable[[], None],
+        settings_saved_cb: Optional[Callable[[], None]] = None,
     ) -> None:
         super().__init__(_make_tray_icon())
         self._config = config
         self._db = db
         self._indexer = indexer
         self._show_window_cb = show_window_cb
+        self._settings_saved_cb = settings_saved_cb
         self._signals = _Signals()
         self._signals.indexing_done.connect(self._on_indexing_done)
 
@@ -192,6 +194,8 @@ class BeaconTray(QSystemTrayIcon):
         dlg = SettingsDialog(self._config, auth, self._indexer, self._db)
         dlg.exec()
         self.update_index_status()
+        if self._settings_saved_cb is not None:
+            self._settings_saved_cb()
 
     def _quit(self) -> None:
         from PyQt6.QtWidgets import QApplication
