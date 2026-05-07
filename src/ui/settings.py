@@ -204,7 +204,7 @@ class SettingsDialog(QDialog):
         self._hotkey_edit = _HotkeyEdit()
         self._hotkey_edit.hotkey_captured.connect(self._on_hotkey_captured)
         self._hotkey_change_btn = QPushButton("Change")
-        self._hotkey_change_btn.setFixedWidth(70)
+        self._hotkey_change_btn.setMinimumWidth(80)
         self._hotkey_change_btn.clicked.connect(self._on_hotkey_btn_clicked)
         hotkey_row.addWidget(self._hotkey_edit, 1)
         hotkey_row.addWidget(self._hotkey_change_btn)

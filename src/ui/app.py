@@ -52,7 +52,7 @@ class BeaconApp:
             db=self._db,
             indexer=self._indexer,
             show_window_cb=self._window.show_and_focus,
-            settings_saved_cb=self._reschedule_refresh,
+            settings_saved_cb=self._on_settings_saved,
         )
         self._tray.show()
 
@@ -105,7 +105,7 @@ class BeaconApp:
         if dlg.exec() == QDialog.DialogCode.Accepted:
             self._searcher.reload()
             self._tray.update_index_status()
-            self._reschedule_refresh()
+            self._on_settings_saved()
 
     # ------------------------------------------------------------------
     # Global hotkey
@@ -135,8 +135,22 @@ class BeaconApp:
         try:
             if self._hotkey_listener is not None:
                 self._hotkey_listener.stop()
+                self._hotkey_listener = None
         except Exception:
             pass
+
+    def _restart_hotkey_listener(self) -> None:
+        self._stop_hotkey_listener()
+        self._start_hotkey_listener()
+
+    # ------------------------------------------------------------------
+    # Settings saved
+    # ------------------------------------------------------------------
+
+    def _on_settings_saved(self) -> None:
+        """Called after the settings dialog is accepted; reloads live subsystems."""
+        self._reschedule_refresh()
+        self._restart_hotkey_listener()
 
     # ------------------------------------------------------------------
     # Background refresh
