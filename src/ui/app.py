@@ -5,6 +5,8 @@ import threading
 import time
 from typing import Callable
 
+_MIN_REFRESH_DELAY_S = 10.0  # startup/floor grace period before auto-indexing
+
 
 def _build_indexer(config, auth, db):
     """Lazy import to avoid loading playwright at module level."""
@@ -92,6 +94,7 @@ class BeaconApp:
     # ------------------------------------------------------------------
 
     def _open_settings(self) -> None:
+        from PyQt6.QtWidgets import QDialog
         from src.ui.settings import SettingsDialog
         dlg = SettingsDialog(
             config=self._config,
@@ -99,12 +102,10 @@ class BeaconApp:
             indexer=self._indexer,
             db=self._db,
         )
-        dlg.exec()
-        # Reload searcher after potential index run in settings
-        self._searcher.reload()
-        self._tray.update_index_status()
-        # Interval may have changed — restart the timer with correct delay.
-        self._reschedule_refresh()
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            self._searcher.reload()
+            self._tray.update_index_status()
+            self._reschedule_refresh()
 
     # ------------------------------------------------------------------
     # Global hotkey
@@ -151,13 +152,10 @@ class BeaconApp:
 
         last = self._db.get_last_indexed()
         if last is None:
-            # Never indexed — refresh soon after startup.
-            delay = 10.0
+            delay = _MIN_REFRESH_DELAY_S
         else:
-            elapsed = (time.time() - last.replace(tzinfo=None).timestamp())
-            remaining = interval_seconds - elapsed
-            # At least 10 s so we don't hammer the indexer immediately.
-            delay = max(10.0, remaining)
+            elapsed = time.time() - last.replace(tzinfo=None).timestamp()
+            delay = max(_MIN_REFRESH_DELAY_S, interval_seconds - elapsed)
 
         def _run() -> None:
             self._do_background_refresh()

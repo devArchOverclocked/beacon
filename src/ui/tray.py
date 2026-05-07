@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import threading
 from datetime import datetime, timezone
-from typing import Callable, Optional
+from typing import Callable
 
 from PyQt6.QtCore import QObject, pyqtSignal
 from PyQt6.QtGui import QColor, QFont, QIcon, QPainter, QPixmap
@@ -64,7 +64,7 @@ class BeaconTray(QSystemTrayIcon):
         db: Database,
         indexer,          # Indexer — avoid circular import with string type
         show_window_cb: Callable[[], None],
-        settings_saved_cb: Optional[Callable[[], None]] = None,
+        settings_saved_cb: Callable[[], None] = lambda: None,
     ) -> None:
         super().__init__(_make_tray_icon())
         self._config = config
@@ -186,15 +186,15 @@ class BeaconTray(QSystemTrayIcon):
             )
 
     def _open_settings(self) -> None:
+        from PyQt6.QtWidgets import QDialog
         from src.auth import AuthManager
         from src.ui.settings import SettingsDialog
 
         # Reconstruct auth — it holds no state beyond the path
         auth = AuthManager(self._config.session_path)
         dlg = SettingsDialog(self._config, auth, self._indexer, self._db)
-        dlg.exec()
-        self.update_index_status()
-        if self._settings_saved_cb is not None:
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            self.update_index_status()
             self._settings_saved_cb()
 
     def _quit(self) -> None:

@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
-from PyQt6.QtCore import Qt, QSize, pyqtSignal
+from PyQt6.QtCore import Qt, QSize, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor, QFont, QPainter, QPainterPath, QKeyEvent
 from PyQt6.QtWidgets import (
     QApplication,
@@ -204,7 +204,6 @@ class BeaconWindow(QWidget):
 
     def show_and_focus(self) -> None:
         """Show, raise to front, center on primary screen, clear input."""
-        from PyQt6.QtCore import QTimer
         self._searcher.reload()
         self._input.clear()
         self._clear_results()

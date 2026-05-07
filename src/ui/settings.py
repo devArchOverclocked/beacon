@@ -368,6 +368,11 @@ class SettingsDialog(QDialog):
     # Hotkey capture
     # ------------------------------------------------------------------
 
+    def _exit_hotkey_editing(self) -> None:
+        self._hotkey_editing = False
+        self._hotkey_edit.setEnabled(False)
+        self._hotkey_change_btn.setText("Change")
+
     def _on_hotkey_btn_clicked(self) -> None:
         if not self._hotkey_editing:
             self._hotkey_editing = True
@@ -375,12 +380,8 @@ class SettingsDialog(QDialog):
             self._hotkey_edit.setFocus()
             self._hotkey_change_btn.setText("Cancel")
         else:
-            self._hotkey_editing = False
             self._hotkey_edit.setText(self._config.hotkey)
-            self._hotkey_edit.setEnabled(False)
-            self._hotkey_change_btn.setText("Change")
+            self._exit_hotkey_editing()
 
     def _on_hotkey_captured(self, _combo: str) -> None:
-        self._hotkey_editing = False
-        self._hotkey_edit.setEnabled(False)
-        self._hotkey_change_btn.setText("Change")
+        self._exit_hotkey_editing()
