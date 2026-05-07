@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
-from PyQt6.QtCore import Qt, QSize, pyqtSignal
+from PyQt6.QtCore import Qt, QSize, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor, QFont, QPainter, QPainterPath, QKeyEvent
 from PyQt6.QtWidgets import (
     QApplication,
@@ -212,7 +212,9 @@ class BeaconWindow(QWidget):
         self.show()
         self.raise_()
         self.activateWindow()
-        self._input.setFocus()
+        # Defer setFocus to the next event loop iteration so the window is
+        # fully mapped before we request focus — fixes intermittent miss.
+        QTimer.singleShot(0, self._input.setFocus)
 
     def hide_window(self) -> None:
         self.hide()

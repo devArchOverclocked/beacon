@@ -40,12 +40,20 @@ class _WorkerSignals(QObject):
 # ---------------------------------------------------------------------------
 
 class _HotkeyEdit(QLineEdit):
-    """Read-only field that captures key combinations and formats them."""
+    """Read-only display field that captures a key combo when in edit mode.
+
+    Starts disabled; the companion "Change" button activates capture mode.
+    After one valid combo is captured the ``hotkey_captured`` signal fires
+    and the field returns to disabled display mode automatically.
+    """
+
+    hotkey_captured = pyqtSignal(str)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setReadOnly(True)
-        self.setPlaceholderText("Click and press a key combination…")
+        self.setEnabled(False)
+        self.setPlaceholderText("Press a key combination…")
 
     def keyPressEvent(self, event: QKeyEvent) -> None:  # type: ignore[override]
         key = event.key()
@@ -76,7 +84,9 @@ class _HotkeyEdit(QLineEdit):
             key_name = "tab"
 
         parts.append(key_name)
-        self.setText("+".join(parts))
+        combo = "+".join(parts)
+        self.setText(combo)
+        self.hotkey_captured.emit(combo)
 
 
 # ---------------------------------------------------------------------------
@@ -100,6 +110,7 @@ class SettingsDialog(QDialog):
         self._indexer = indexer
         self._db = db
         self._signals = _WorkerSignals()
+        self._hotkey_editing = False
 
         self.setWindowTitle("Beacon Settings")
         self.setMinimumWidth(480)
@@ -178,13 +189,26 @@ class SettingsDialog(QDialog):
         self._interval_spin = QSpinBox()
         self._interval_spin.setRange(1, 24)
         self._interval_spin.setSuffix(" hours")
+        # Make the text field non-editable so the spin arrows work on first
+        # click without the selection-cycling that a suffix causes.
+        self._interval_spin.lineEdit().setReadOnly(True)
         pref_layout.addRow("Refresh interval:", self._interval_spin)
 
         self._browser_check = QCheckBox("Open files in browser by default")
         pref_layout.addRow("", self._browser_check)
 
+        hotkey_container = QWidget()
+        hotkey_row = QHBoxLayout(hotkey_container)
+        hotkey_row.setContentsMargins(0, 0, 0, 0)
+        hotkey_row.setSpacing(8)
         self._hotkey_edit = _HotkeyEdit()
-        pref_layout.addRow("Hotkey:", self._hotkey_edit)
+        self._hotkey_edit.hotkey_captured.connect(self._on_hotkey_captured)
+        self._hotkey_change_btn = QPushButton("Change")
+        self._hotkey_change_btn.setFixedWidth(70)
+        self._hotkey_change_btn.clicked.connect(self._on_hotkey_btn_clicked)
+        hotkey_row.addWidget(self._hotkey_edit, 1)
+        hotkey_row.addWidget(self._hotkey_change_btn)
+        pref_layout.addRow("Hotkey:", hotkey_container)
 
         root.addWidget(pref_group)
 
@@ -339,3 +363,25 @@ class SettingsDialog(QDialog):
     def _on_save_clicked(self) -> None:
         self._save_values()
         self.accept()
+
+    # ------------------------------------------------------------------
+    # Hotkey capture
+    # ------------------------------------------------------------------
+
+    def _exit_hotkey_editing(self) -> None:
+        self._hotkey_editing = False
+        self._hotkey_edit.setEnabled(False)
+        self._hotkey_change_btn.setText("Change")
+
+    def _on_hotkey_btn_clicked(self) -> None:
+        if not self._hotkey_editing:
+            self._hotkey_editing = True
+            self._hotkey_edit.setEnabled(True)
+            self._hotkey_edit.setFocus()
+            self._hotkey_change_btn.setText("Cancel")
+        else:
+            self._hotkey_edit.setText(self._config.hotkey)
+            self._exit_hotkey_editing()
+
+    def _on_hotkey_captured(self, _combo: str) -> None:
+        self._exit_hotkey_editing()

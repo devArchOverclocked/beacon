@@ -5,6 +5,8 @@ import threading
 import time
 from typing import Callable
 
+_MIN_REFRESH_DELAY_S = 10.0  # startup/floor grace period before auto-indexing
+
 
 def _build_indexer(config, auth, db):
     """Lazy import to avoid loading playwright at module level."""
@@ -50,6 +52,7 @@ class BeaconApp:
             db=self._db,
             indexer=self._indexer,
             show_window_cb=self._window.show_and_focus,
+            settings_saved_cb=self._reschedule_refresh,
         )
         self._tray.show()
 
@@ -91,6 +94,7 @@ class BeaconApp:
     # ------------------------------------------------------------------
 
     def _open_settings(self) -> None:
+        from PyQt6.QtWidgets import QDialog
         from src.ui.settings import SettingsDialog
         dlg = SettingsDialog(
             config=self._config,
@@ -98,10 +102,10 @@ class BeaconApp:
             indexer=self._indexer,
             db=self._db,
         )
-        dlg.exec()
-        # Reload searcher after potential index run in settings
-        self._searcher.reload()
-        self._tray.update_index_status()
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            self._searcher.reload()
+            self._tray.update_index_status()
+            self._reschedule_refresh()
 
     # ------------------------------------------------------------------
     # Global hotkey
@@ -139,17 +143,32 @@ class BeaconApp:
     # ------------------------------------------------------------------
 
     def _schedule_refresh(self) -> None:
-        """Schedule the next background index refresh."""
+        """Schedule the next background index refresh.
+
+        Accounts for elapsed time since the last index so the app catches up
+        after a long shutdown instead of waiting a full interval from startup.
+        """
         interval_seconds = self._config.refresh_interval_hours * 3600
+
+        last = self._db.get_last_indexed()
+        if last is None:
+            delay = _MIN_REFRESH_DELAY_S
+        else:
+            elapsed = time.time() - last.replace(tzinfo=None).timestamp()
+            delay = max(_MIN_REFRESH_DELAY_S, interval_seconds - elapsed)
 
         def _run() -> None:
             self._do_background_refresh()
-            # Re-schedule for the next cycle
             self._schedule_refresh()
 
-        self._refresh_timer = threading.Timer(interval_seconds, _run)
+        self._refresh_timer = threading.Timer(delay, _run)
         self._refresh_timer.daemon = True
         self._refresh_timer.start()
+
+    def _reschedule_refresh(self) -> None:
+        """Cancel any pending timer and reschedule — call after settings save."""
+        self._cancel_refresh_timer()
+        self._schedule_refresh()
 
     def _cancel_refresh_timer(self) -> None:
         if self._refresh_timer is not None:

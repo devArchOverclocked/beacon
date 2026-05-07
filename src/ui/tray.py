@@ -64,12 +64,14 @@ class BeaconTray(QSystemTrayIcon):
         db: Database,
         indexer,          # Indexer — avoid circular import with string type
         show_window_cb: Callable[[], None],
+        settings_saved_cb: Callable[[], None] = lambda: None,
     ) -> None:
         super().__init__(_make_tray_icon())
         self._config = config
         self._db = db
         self._indexer = indexer
         self._show_window_cb = show_window_cb
+        self._settings_saved_cb = settings_saved_cb
         self._signals = _Signals()
         self._signals.indexing_done.connect(self._on_indexing_done)
 
@@ -184,14 +186,16 @@ class BeaconTray(QSystemTrayIcon):
             )
 
     def _open_settings(self) -> None:
+        from PyQt6.QtWidgets import QDialog
         from src.auth import AuthManager
         from src.ui.settings import SettingsDialog
 
         # Reconstruct auth — it holds no state beyond the path
         auth = AuthManager(self._config.session_path)
         dlg = SettingsDialog(self._config, auth, self._indexer, self._db)
-        dlg.exec()
-        self.update_index_status()
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            self.update_index_status()
+            self._settings_saved_cb()
 
     def _quit(self) -> None:
         from PyQt6.QtWidgets import QApplication
