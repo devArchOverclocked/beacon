@@ -103,8 +103,6 @@ class BeaconApp:
             db=self._db,
         )
         if dlg.exec() == QDialog.DialogCode.Accepted:
-            self._searcher.reload()
-            self._tray.update_index_status()
             self._on_settings_saved()
 
     # ------------------------------------------------------------------
@@ -136,6 +134,9 @@ class BeaconApp:
             if self._hotkey_listener is not None:
                 self._hotkey_listener.stop()
                 self._hotkey_listener = None
+            if self._hotkey_thread is not None:
+                self._hotkey_thread.join(timeout=1.0)
+                self._hotkey_thread = None
         except Exception:
             pass
 
@@ -148,7 +149,8 @@ class BeaconApp:
     # ------------------------------------------------------------------
 
     def _on_settings_saved(self) -> None:
-        """Called after the settings dialog is accepted; reloads live subsystems."""
+        self._searcher.reload()
+        self._tray.update_index_status()
         self._reschedule_refresh()
         self._restart_hotkey_listener()
 
